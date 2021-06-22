@@ -4,13 +4,14 @@ import jax
 import jax.numpy as jnp
 import time
 import matplotlib.pyplot as plt
+import json
 
 import models as myModels
-import auxillary as aux
+import auxiliary as aux
 
 n_sites = 12
-point_num = 20 # number of random hamiltonians
-trial_num = 5 # number of trials for each random hamiltonian
+point_num = 1 # number of random hamiltonians
+trial_num = 1 # number of trials for each random hamiltonian
 iter_num = 1500
 key = jax.random.PRNGKey(11111)
 key, *subkeys = jax.random.split(key, 200) # 200 should be larger than poin_num
@@ -29,7 +30,7 @@ for idx0 in range(point_num):
     "this loop loops over different random hamiltonians"
     
     print("system ", idx0)
-    #idx0 = 34
+    idx0 = 10
     
     subkeys[idx0], *subsubkeys = jax.random.split(subkeys[idx0], 200) # 200 should be larger than trial_num
     "generate enough subsubkeys for later parameters initialization"
@@ -65,37 +66,47 @@ for idx0 in range(point_num):
     #model = nk.models.RBM(alpha = 2)
     #symmetries = graph.translations()
     #model = nk.models.RBMSymm(symmetries=symmetries, alpha=1, dtype=complex)
-    #print("model generated!")
+    
 
-    #sampler = nk.sampler.MetropolisExchange(hilbert=hilbert, n_chains=20, graph=graph)
-    sampler = nk.sampler.MetropolisLocal(hilbert=hilbert, n_chains=20)
-    #sampler = nk.sampler.MetropolisHamiltonian(hilbert=hilbert, hamiltonian=hamiltonian, n_chains=20)
+    #sampler = nk.sampler.MetropolisExchange(hilbert=hilbert, n_chains_per_rank=20, graph=graph)
+    sampler = nk.sampler.MetropolisLocal(hilbert=hilbert, n_chains_per_rank=20)
+    #sampler = nk.sampler.MetropolisHamiltonian(hilbert=hilbert, hamiltonian=hamiltonian, n_chains_per_rank=20)
 
-    #op = nk.optimizer.Sgd(learning_rate=0.001)
+    op = nk.optimizer.Sgd(learning_rate=0.002)
     #op = nk.optimizer.Adam(learning_rate=0.01)
     #op = nk.optimizer.AdaGrad(learning_rate=0.01)
     #op = nk.optimizer.Momentum(learning_rate=0.01)
-    #sr = nk.optimizer.SR(diag_shift=0.1)
+    sr = nk.optimizer.SR(diag_shift=0.01, iterative=True)
 
     trial_record_list = []
     for idx1 in range(trial_num):
         "this loop tries different variational state initialization seeds"
 
         idx_bias = 0
-        vs = nk.variational.MCState(
+        vs = nk.vqs.MCState(
             sampler, model, n_samples=500, sampler_seed=int(subsubkeys[idx1+1+idx_bias][0]), seed=int(subsubkeys[idx1+1+idx_bias][1]))
 
-        training = aux.Training(variational_state=vs, hamiltonian=hamiltonian)
+        "mean field initialization"
+        mean_field = aux.MeanField_Init(J, variational_state=vs, n_sites=n_sites)
+        vs.parameters = mean_field.Param_Init(noise=0.02, noise_key=subsubkeys[idx_bias])
+        print("\n", "mean field energy:", mean_field.mean_field_energy)
+
+        # training = aux.Training(variational_state=vs, hamiltonian=hamiltonian) # to do self-defined training (without SR), uncomment this line
+        gs = nk.VMC(hamiltonian=hamiltonian, optimizer=op, variational_state=vs, preconditoner=sr, sr=sr)
 
         print("trial ", idx1)
         print("sampler seed: ", int(subsubkeys[idx1+1+idx_bias][0]), "seed for parameters: ", int(subsubkeys[idx1+1+idx_bias][1]))
+
         start = time.time()
-        #training.Run0(iter_num=iter_num, lr=0.002)
-        training.Run1(iter_num=iter_num, lr_list=[[0, 0.002]], sample_num_list=[[0, 500]])
+        # training.Run1(iter_num=iter_num, lr_list=[[0, 0.002]], sample_num_list=[[0, 500]]) # to do self-defined training (without SR), uncomment this line
+        gs.run(iter_num, out='SymmRBM_12')
         end = time.time()
         print('The RBM calculation took',end-start,'seconds')
-        #approx_gs_energy = np.real(vs.expect(hamiltonian).__dict__["mean"])
-        approx_gs_energy = np.average(training.log[iter_num-20:])
+
+        data = json.load(open("SymmRBM_12.log"))
+        energy_list = data["Energy"]["Mean"]["real"]
+        approx_gs_energy = np.average(energy_list[iter_num-20:])
+        # approx_gs_energy = np.average(training.log[iter_num-20:]) # to do self-defined training (without SR), uncomment this line
         print("vstate expectation energy:", approx_gs_energy.round(6))
         error = np.abs((approx_gs_energy-exact_gs_energy)/exact_gs_energy)[0]
         trial_record_list.append([idx1+idx_bias, error])
@@ -105,10 +116,8 @@ for idx0 in range(point_num):
     print("error list: ", trial_record_list)
     min_error = min(trial_record_list[i][1] for i in range(len(trial_record_list)))
     data_list.append([corrlen, error, min_error])
-    np.save("data_1.npy", np.array(data_list))
+    # np.save("data_test.npy", np.array(data_list))
     print("**************************************************************************************************************************")
 
 data_list=np.array(data_list)
-np.save("data_12.npy", data_list)
-
-
+np.save("data_test.npy", data_list)
